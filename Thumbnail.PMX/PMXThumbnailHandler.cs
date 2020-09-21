@@ -85,8 +85,6 @@ namespace Thumbnail.PMX
                     view.Children.Add(visual);
 
                     view.Children.Add(new DefaultLights());
-                    view.Camera.Position = new Point3D(0, 5, 5);
-                    view.Camera.LookDirection = new Vector3D(0, -1, 0);
                     
                     try
                     {
