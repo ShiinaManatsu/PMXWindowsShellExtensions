@@ -9,8 +9,6 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Threading;
-using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Media3D;
@@ -55,46 +53,59 @@ namespace Thumbnail.PMX
                     var models = new Model3DGroup();
                     for (int i = 0, i_max = creation_info.value.Length; i < i_max; ++i)
                     {
-                        //format_.face_vertex_list.face_vert_indexを[start](含む)から[start+count](含まず)迄取り出し
-                        int[] indices = creation_info.value[i].plane_indices.Select(x => (int)creation_info.reassign_dictionary[x]) //頂点リアサインインデックス変換
+                        int[] indices = creation_info.value[i].plane_indices.Select(x => (int)creation_info.reassign_dictionary[x])
                                                                             .ToArray();
-                        var mesh = new System.Windows.Media.Media3D.MeshGeometry3D();
+                        var mesh = new MeshGeometry3D
+                        {
+                            Positions = new Point3DCollection(pmx.vertex_list.vertex.Select(x => x.pos)),
 
-                        mesh.Positions = new Point3DCollection(pmx.vertex_list.vertex.Select(x => x.pos));
-
-                        mesh.TextureCoordinates = new PointCollection(pmx.vertex_list.vertex.Select(x => x.uv));
+                            TextureCoordinates = new PointCollection(pmx.vertex_list.vertex.Select(x => x.uv))
+                        };
 
                         indices.ToList()
                             .ForEach(x => mesh.TriangleIndices.Add(x));
-                        var material = new System.Windows.Media.Media3D.DiffuseMaterial(new SolidColorBrush(System.Windows.Media.Color.FromRgb(160, 160, 160)));
-                        var model = new System.Windows.Media.Media3D.GeometryModel3D(mesh, material);
-                        model.BackMaterial = material;
-                        models.Children.Add(model);
+                        var material = new DiffuseMaterial(new SolidColorBrush(System.Windows.Media.Color.FromRgb(160, 160, 160)));
+                        var model = new GeometryModel3D(mesh, material)
+                        {
+                            BackMaterial = material
+                        };
+
+                        models.Children.Add(new GeometryModel3D(mesh, material)
+                        {
+                            BackMaterial = material
+                        });
                     }
 
-                    var visual = new ModelVisual3D();
-                    visual.Content = models;
+                    var visual = new ModelVisual3D
+                    {
+                        Content = models
+                    };
 
                     var view = new HelixViewport3D();
                     view.Children.Add(visual);
 
-                    var bitmap = view.Viewport.RenderBitmap(new SolidColorBrush(Colors.Transparent));
-
-
-                    var handler = new ManualResetEvent(false);
-                    bitmap.DownloadCompleted += (_, __) =>
+                    view.Children.Add(new DefaultLights());
+                    view.Camera.Position = new Point3D(0, 5, 5);
+                    view.Camera.LookDirection = new Vector3D(0, -1, 0);
+                    
+                    try
                     {
-                        handler.Set();
-                    };
-                    handler.WaitOne();
-                    return Scale(BitmapFromSource(bitmap), width);
+                        var bitmap = view.Viewport.RenderBitmap(width, width, new SolidColorBrush(Colors.Transparent));
+
+                        return BitmapFromSource(bitmap);
+                    }
+                    catch (Exception exception)
+                    {
+                        LogError("An exception occurred Rendering bitmap.", exception);
+                        return null;
+                    }
+
                 }
             }
             catch (Exception exception)
             {
                 //  Log the exception and return null for failure
                 LogError("An exception occurred opening the text file.", exception);
-                MessageBox.Show(exception.Message);
                 return null;
             }
         }
