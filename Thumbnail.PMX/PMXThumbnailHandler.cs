@@ -9,6 +9,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Media3D;
@@ -21,7 +22,7 @@ namespace Thumbnail.PMX
     [ComVisible(true)]
     [Guid("88615FC3-2F4A-463B-805B-1ED5BFF4F393")]
     [COMServerAssociation(AssociationType.FileExtension, ".pmx")]
-    public class PMXThumbnailHandler : SharpThumbnailHandler
+    public class PMXThumbnailHandler : FileThumbnailHandler
     {
         /// <summary>
         /// Initializes a new instance of the <see cref="PMXThumbnailHandler"/> class
@@ -29,7 +30,6 @@ namespace Thumbnail.PMX
         public PMXThumbnailHandler()
         {
             //  Create our lazy objects
-
         }
 
         /// <summary>
@@ -42,68 +42,72 @@ namespace Thumbnail.PMX
         protected override Bitmap GetThumbnailImage(uint width)
         {
             //  Attempt to open the stream with a reader
+            var pmx = PMXLoaderScript.Import(SelectedItemPath);
+
+            MeshCreationInfo creation_info = CreateMeshCreationInfoSingle(pmx);
+
+            var diffuseMat = new DiffuseMaterial(new SolidColorBrush(Colors.Gray));
+
+            var models = new Model3DGroup();
+            for (int i = 0, i_max = creation_info.value.Length; i < i_max; ++i)
+            {
+                int[] indices = creation_info.value[i].plane_indices.Select(x => (int)creation_info.reassign_dictionary[x])
+                                                                    .ToArray();
+                var mesh = new MeshGeometry3D
+                {
+                    Positions = new Point3DCollection(pmx.vertex_list.vertex.Select(x => x.pos)),
+
+                    TextureCoordinates = new PointCollection(pmx.vertex_list.vertex.Select(x => x.uv))
+                };
+
+                indices.ToList()
+                    .ForEach(x => mesh.TriangleIndices.Add(x));
+                var textureIndex = pmx.material_list.material[creation_info.value[i].material_index].usually_texture_index;
+                var texturePath = pmx.texture_list.texture_file.ElementAtOrDefault((int)textureIndex);
+                texturePath = Path.Combine(Path.GetDirectoryName(SelectedItemPath), texturePath);
+
+                var material = diffuseMat;
+                Log($"Texture found: {texturePath}");
+                
+                if (!string.IsNullOrWhiteSpace(texturePath))
+                {
+                    material = new DiffuseMaterial(new ImageBrush(new BitmapImage(new Uri(texturePath))));
+                }
+                var model = new GeometryModel3D(mesh, material)
+                {
+                    BackMaterial = material
+                };
+
+                models.Children.Add(new GeometryModel3D(mesh, material)
+                {
+                    BackMaterial = material
+                });
+            }
+
+            var visual = new ModelVisual3D
+            {
+                Content = models
+            };
+
+            var view = new HelixViewport3D();
+            view.Children.Add(visual);
+
+            view.Camera.Position = new Point3D(0, 15, -30);
+            view.Camera.LookDirection = new Vector3D(0, -5, 30);
+
+            view.Children.Add(new SunLight() { Altitude = 260 });
+
             try
             {
-                using (var reader = new StreamReader(SelectedItemStream))
-                {
-                    var pmx = PMXLoaderScript.Import(reader.BaseStream);
+                var bitmap = view.Viewport.RenderBitmap(width, width, new SolidColorBrush(Colors.Transparent));
 
-                    MeshCreationInfo creation_info = CreateMeshCreationInfoSingle(pmx);
-
-                    var models = new Model3DGroup();
-                    for (int i = 0, i_max = creation_info.value.Length; i < i_max; ++i)
-                    {
-                        int[] indices = creation_info.value[i].plane_indices.Select(x => (int)creation_info.reassign_dictionary[x])
-                                                                            .ToArray();
-                        var mesh = new MeshGeometry3D
-                        {
-                            Positions = new Point3DCollection(pmx.vertex_list.vertex.Select(x => x.pos)),
-
-                            TextureCoordinates = new PointCollection(pmx.vertex_list.vertex.Select(x => x.uv))
-                        };
-
-                        indices.ToList()
-                            .ForEach(x => mesh.TriangleIndices.Add(x));
-                        var material = new DiffuseMaterial(new SolidColorBrush(System.Windows.Media.Color.FromRgb(160, 160, 160)));
-                        var model = new GeometryModel3D(mesh, material)
-                        {
-                            BackMaterial = material
-                        };
-
-                        models.Children.Add(new GeometryModel3D(mesh, material)
-                        {
-                            BackMaterial = material
-                        });
-                    }
-
-                    var visual = new ModelVisual3D
-                    {
-                        Content = models
-                    };
-
-                    var view = new HelixViewport3D();
-                    view.Children.Add(visual);
-
-                    view.Children.Add(new DefaultLights());
-                    
-                    try
-                    {
-                        var bitmap = view.Viewport.RenderBitmap(width, width, new SolidColorBrush(Colors.Transparent));
-
-                        return BitmapFromSource(bitmap);
-                    }
-                    catch (Exception exception)
-                    {
-                        LogError("An exception occurred Rendering bitmap.", exception);
-                        return null;
-                    }
-
-                }
+                return BitmapFromSource(bitmap);
             }
             catch (Exception exception)
             {
-                //  Log the exception and return null for failure
-                LogError("An exception occurred opening the text file.", exception);
+                LogError("An exception occurred Rendering bitmap.", exception);
+                //MessageBox.Show(exception.Message);
+                //MessageBox.Show(exception.StackTrace);
                 return null;
             }
         }
@@ -143,11 +147,13 @@ namespace Thumbnail.PMX
 
         MeshCreationInfo CreateMeshCreationInfoSingle(PMXFormat format)
         {
-            MeshCreationInfo result = new MeshCreationInfo();
-            //全マテリアルを設定
-            result.value = CreateMeshCreationInfoPacks(format);
-            //全頂点を設定
-            result.all_vertices = Enumerable.Range(0, format.vertex_list.vertex.Length).Select(x => (uint)x).ToArray();
+            MeshCreationInfo result = new MeshCreationInfo
+            {
+                //全マテリアルを設定
+                value = CreateMeshCreationInfoPacks(format),
+                //全頂点を設定
+                all_vertices = Enumerable.Range(0, format.vertex_list.vertex.Length).Select(x => (uint)x).ToArray()
+            };
             //頂点リアサインインデックス用辞書作成
             result.reassign_dictionary = new Dictionary<uint, uint>(result.all_vertices.Length);
             for (uint i = 0, i_max = (uint)result.all_vertices.Length; i < i_max; ++i)
