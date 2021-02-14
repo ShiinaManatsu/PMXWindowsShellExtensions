@@ -2,7 +2,6 @@
 using MMDExtensions;
 using MMDExtensions.PMX;
 using SharpShell.Attributes;
-using SharpShell.SharpThumbnailHandler;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -64,15 +63,18 @@ namespace Thumbnail.PMX
                     .ForEach(x => mesh.TriangleIndices.Add(x));
                 var textureIndex = pmx.material_list.material[creation_info.value[i].material_index].usually_texture_index;
                 var texturePath = pmx.texture_list.texture_file.ElementAtOrDefault((int)textureIndex);
-                texturePath = Path.Combine(Path.GetDirectoryName(SelectedItemPath), texturePath);
 
                 var material = diffuseMat;
-                Log($"Texture found: {texturePath}");
-                
                 if (!string.IsNullOrWhiteSpace(texturePath))
                 {
-                    material = new DiffuseMaterial(new ImageBrush(new BitmapImage(new Uri(texturePath))));
+                    texturePath = Path.Combine(Path.GetDirectoryName(SelectedItemPath), texturePath);
+                    Log($"Texture found: {texturePath}");
+                    if (!string.IsNullOrWhiteSpace(texturePath) && File.Exists(texturePath))
+                    {
+                        material = new DiffuseMaterial(new ImageBrush(new BitmapImage(new Uri(texturePath))));
+                    }
                 }
+
                 var model = new GeometryModel3D(mesh, material)
                 {
                     BackMaterial = material
