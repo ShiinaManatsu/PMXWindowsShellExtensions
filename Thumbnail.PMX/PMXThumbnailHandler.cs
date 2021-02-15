@@ -5,13 +5,17 @@ using SharpShell.Attributes;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Media3D;
+using MediaPixelFormat = System.Windows.Media.PixelFormat;
+using SystemPixelFormat = System.Drawing.Imaging.PixelFormat;
 
 namespace Thumbnail.PMX
 {
@@ -45,9 +49,10 @@ namespace Thumbnail.PMX
 
             MeshCreationInfo creation_info = CreateMeshCreationInfoSingle(pmx);
 
-            var diffuseMat = new DiffuseMaterial(new SolidColorBrush(Colors.Gray));
+            var diffuseMat = MaterialHelper.CreateMaterial(Colors.Gray);
 
             var models = new Model3DGroup();
+
             for (int i = 0, i_max = creation_info.value.Length; i < i_max; ++i)
             {
                 int[] indices = creation_info.value[i].plane_indices.Select(x => (int)creation_info.reassign_dictionary[x])
@@ -56,8 +61,10 @@ namespace Thumbnail.PMX
                 {
                     Positions = new Point3DCollection(pmx.vertex_list.vertex.Select(x => x.pos)),
 
-                    TextureCoordinates = new PointCollection(pmx.vertex_list.vertex.Select(x => x.uv))
+                    TextureCoordinates = new PointCollection(pmx.vertex_list.vertex.Select(x => new System.Windows.Point(x.uv.X, x.uv.Y)))
                 };
+
+
 
                 indices.ToList()
                     .ForEach(x => mesh.TriangleIndices.Add(x));
@@ -68,36 +75,41 @@ namespace Thumbnail.PMX
                 if (!string.IsNullOrWhiteSpace(texturePath))
                 {
                     texturePath = Path.Combine(Path.GetDirectoryName(SelectedItemPath), texturePath);
-                    Log($"Texture found: {texturePath}");
+                    //Log($"Texture found: {texturePath}");
+
                     if (!string.IsNullOrWhiteSpace(texturePath) && File.Exists(texturePath))
                     {
-                        material = new DiffuseMaterial(new ImageBrush(new BitmapImage(new Uri(texturePath))));
+                        //  dds and tga
+                        if (new string[] { ".dds", ".tga" }.Any(x => x.Equals(Path.GetExtension(texturePath))))
+                        {
+                            var bitmap = PFimToBitmap(texturePath);
+                            material = MaterialHelper.CreateImageMaterial(Bitmap2BitmapImage(bitmap), 1);
+                        }
+                        else
+                        {
+                            material = MaterialHelper.CreateImageMaterial(texturePath, 1, UriKind.Absolute);
+                        }
                     }
                 }
 
-                var model = new GeometryModel3D(mesh, material)
-                {
-                    BackMaterial = material
-                };
-
-                models.Children.Add(new GeometryModel3D(mesh, material)
-                {
-                    BackMaterial = material
-                });
+                models.Children.Add(new GeometryModel3D(mesh, material));
             }
 
-            var visual = new ModelVisual3D
+            var sorting = new SortingVisual3D()
             {
                 Content = models
             };
 
             var view = new HelixViewport3D();
-            view.Children.Add(visual);
-
+            view.Children.Add(sorting);
             view.Camera.Position = new Point3D(0, 15, -30);
             view.Camera.LookDirection = new Vector3D(0, -5, 30);
 
+            view.Background = System.Windows.Media.Brushes.Transparent;
+
             view.Children.Add(new SunLight() { Altitude = 260 });
+
+            view.Children.Add(new DefaultLights());
 
             try
             {
@@ -126,25 +138,76 @@ namespace Thumbnail.PMX
             return bitmap;
         }
 
-        private Bitmap Scale(Bitmap image, uint size)
+        private Bitmap PFimToBitmap(string path)
         {
-            var bmp = new Bitmap((int)size, (int)size);
-            var graph = Graphics.FromImage(bmp);
+            using (var image = Pfim.Pfim.FromFile(path))
+            {
+                SystemPixelFormat format;
 
-            float scale = Math.Min(size / image.Width, size / image.Height);
+                // Convert from Pfim's backend agnostic image format into GDI+'s image format
+                switch (image.Format)
+                {
+                    case Pfim.ImageFormat.Rgba32:
+                        format = SystemPixelFormat.Format32bppArgb;
+                        break;
+                    case Pfim.ImageFormat.Rgba16:
+                        format = SystemPixelFormat.Format16bppArgb1555;
+                        break;
+                    case Pfim.ImageFormat.Rgb24:
+                        format = SystemPixelFormat.Format24bppRgb;
+                        break;
+                    case Pfim.ImageFormat.Rgb8:
+                        format = SystemPixelFormat.Format8bppIndexed;
+                        break;
+                    default:
+                        // see the sample for more details
+                        throw new NotImplementedException();
+                }
 
-            // uncomment for higher quality output
-            //graph.InterpolationMode = InterpolationMode.High;
-            //graph.CompositingQuality = CompositingQuality.HighQuality;
-            //graph.SmoothingMode = SmoothingMode.AntiAlias;
+                // Pin pfim's data array so that it doesn't get reaped by GC, unnecessary
+                // in this snippet but useful technique if the data was going to be used in
+                // control like a picture box
+                var handle = GCHandle.Alloc(image.Data, GCHandleType.Pinned);
+                try
+                {
+                    var data = Marshal.UnsafeAddrOfPinnedArrayElement(image.Data, 0);
+                    var bitmap = new Bitmap(image.Width, image.Height, image.Stride, format, data);
+                    return bitmap;
+                }
+                catch (Exception e)
+                {
+                    LogError(e.Message);
+                    return null;
+                }
+                finally
+                {
+                    handle.Free();
+                }
+            }
+        }
 
-            var scaleWidth = (int)(image.Width * scale);
-            var scaleHeight = (int)(image.Height * scale);
+        [DllImport("gdi32.dll")]
+        public static extern bool DeleteObject(IntPtr hObject);
 
-            graph.FillRectangle(new System.Drawing.SolidBrush(System.Drawing.Color.Transparent), new RectangleF(0, 0, size, size));
-            graph.DrawImage(image, ((int)size - scaleWidth) / 2, ((int)size - scaleHeight) / 2, scaleWidth, scaleHeight);
+        private BitmapImage Bitmap2BitmapImage(Bitmap bitmap)
+        {
+            IntPtr hBitmap = bitmap.GetHbitmap();
+            BitmapImage retval;
 
-            return bmp;
+            try
+            {
+                retval = Imaging.CreateBitmapSourceFromHBitmap(
+                             hBitmap,
+                             IntPtr.Zero,
+                             Int32Rect.Empty,
+                             BitmapSizeOptions.FromEmptyOptions()) as BitmapImage;
+            }
+            finally
+            {
+                DeleteObject(hBitmap);
+            }
+
+            return retval;
         }
 
         MeshCreationInfo CreateMeshCreationInfoSingle(PMXFormat format)
