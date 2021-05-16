@@ -87,7 +87,8 @@ namespace Thumbnail.PMX
                         }
                         else
                         {
-                            material = MaterialHelper.CreateImageMaterial(texturePath, 1, UriKind.Absolute);
+
+                            material = MaterialHelper.CreateImageMaterial(BitmapImageFromFile(texturePath), 1);
                         }
                     }
                 }
@@ -114,17 +115,40 @@ namespace Thumbnail.PMX
             try
             {
                 var bitmap = view.Viewport.RenderBitmap(width, width, new SolidColorBrush(Colors.Transparent));
-
+                view.Children.Clear();
+                view = null;
+                sorting = null;
+                models = null;
+                GC.Collect();
                 return BitmapFromSource(bitmap);
             }
             catch (Exception exception)
             {
+                view.Children.Clear();
+                view = null;
+                sorting = null;
+                models = null;
+                GC.Collect();
                 LogError("An exception occurred Rendering bitmap.", exception);
                 //MessageBox.Show(exception.Message);
                 //MessageBox.Show(exception.StackTrace);
                 return null;
             }
         }
+
+        public BitmapImage BitmapImageFromFile(string path)
+        {
+            using (var ms = new MemoryStream(File.ReadAllBytes(path)))
+            {
+                var image = new BitmapImage();
+                image.BeginInit();
+                image.CacheOption = BitmapCacheOption.OnLoad; // here
+                image.StreamSource = ms;
+                image.EndInit();
+                return image;
+            }
+        }
+
         private Bitmap BitmapFromSource(BitmapSource bitmapsource)
         {
             System.Drawing.Bitmap bitmap;
