@@ -15,6 +15,8 @@ namespace PMXRenderer.Test
                 File.Delete(savePath);
             }
 
+            //new PMXRenderer().GeneratePmxPreviewWindow(path);
+
             var bitmap = new PMXRenderer().GeneratePmxPreview(path, 1024, 1024);
             bitmap.Save(savePath);
         }
