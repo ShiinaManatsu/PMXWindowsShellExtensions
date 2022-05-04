@@ -1,4 +1,6 @@
 using MMDataIO.Pmx;
+using MMDExtensions;
+using MMDExtensions.PMX;
 using SharpDX;
 using SharpDX.D3DCompiler;
 using SharpDX.Direct3D;
@@ -56,10 +58,11 @@ namespace PMXRenderer
 
         private readonly Dictionary<string, (ShaderResourceView Resource, bool IsArgb)> textureCache = new Dictionary<string, (ShaderResourceView Resource, bool IsArgb)>();
         private readonly List<ShaderResourceView> toonCache = new List<ShaderResourceView>();
+        private List<Texture2D> texture2DCache = new List<Texture2D>();
         private (Buffer Buffer, int VertexCount)[] vertexBuffers;
         private List<VertexBufferBinding> vertexBufferBindings;
 
-        private PmxModelData model;
+        private PMXFormat model;
         private BoundingBox bounds;
 
         private const double Rad2Deg = 360 / (Mathf.PI * 2);
@@ -306,6 +309,21 @@ namespace PMXRenderer
 
             var bitmap = Blit(device, backBuffer);
 
+            foreach (var texture in texture2DCache)
+            {
+                if (texture != null) texture.Dispose();
+            }
+
+            foreach (var texture in textureCache)
+            {
+                texture.Value.Resource.Dispose();
+            }
+
+            foreach (var texture in toonCache)
+            {
+                texture.Dispose();
+            }
+
             // Release all resources
             vertexShader.Dispose();
             pixelShader.Dispose();
@@ -326,50 +344,33 @@ namespace PMXRenderer
 
         private void LoadModel()
         {
-            model = new PmxModelData();
-            using (var r = new BinaryReader(File.OpenRead(pmxPath)))
-            {
-                model.Read(r);
-            }
-            //try
-            //{
-            //    model = new PmxModelData();
-            //    using (var r = new BinaryReader(File.OpenRead(pmxPath)))
-            //    {
-            //        model.Read(r);
-            //    }
-            //}
-            //catch (Exception e)
-            //{
-            //    MessageBox.Show(pmxPath);
-            //    throw e;
-            //}
+            model = PMXLoaderScript.Import(pmxPath);
+            var submeshes = PMXLoaderScript.CreateMeshCreationInfoSingle(model);
 
-            vertexBuffers = new (Buffer Buffer, int VertexCount)[model.MaterialArray.Length];
-            for (int i = 0, indexOffset = 0; i < model.MaterialArray.Length; ++i)
+            vertexBuffers = new (Buffer Buffer, int VertexCount)[model.material_list.material.Length];
+            for (int i = 0; i < model.material_list.material.Length; ++i)
             {
-                var mat = model.MaterialArray[i];
-                var vertexData = new VertexData[mat.FaceCount];
-                for (int j = 0; j < mat.FaceCount; ++j)
+                var submesh = submeshes.value[i];
+                var vertexData = new VertexData[submesh.plane_indices.Length];
+                for (int j = 0; j < submesh.plane_indices.Length; ++j)
                 {
-                    var index = model.VertexIndices[indexOffset + j];
-                    var vertex = model.VertexArray[index];
+                    var index = submesh.plane_indices[j];
+                    var vertex = model.vertex_list.vertex[submeshes.reassign_dictionary[index]];
                     vertexData[j] = new VertexData()
                     {
-                        Position = vertex.Pos * ModelScale,
-                        Normal = vertex.Normal,
-                        UV = vertex.Uv
+                        Position = vertex.pos * ModelScale,
+                        Normal = vertex.normal_vec,
+                        UV = vertex.uv
                     };
                 }
-                indexOffset += mat.FaceCount;
-                vertexBuffers[i] = (Buffer.Create(device, BindFlags.VertexBuffer, vertexData), mat.FaceCount);
+                vertexBuffers[i] = (Buffer.Create(device, BindFlags.VertexBuffer, vertexData), submesh.plane_indices.Length);
             }
             vertexBufferBindings = vertexBuffers.Select(x => new VertexBufferBinding(x.Buffer, Utilities.SizeOf<VertexData>(), 0)).ToList();
 
             var min = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
             var max = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
 
-            foreach (var vertex in model.VertexArray.Select(x => x.Pos))
+            foreach (var vertex in model.vertex_list.vertex.Select(x => x.pos))
             {
                 if (vertex.X < min.X)
                     min.X = vertex.X;
@@ -388,7 +389,7 @@ namespace PMXRenderer
 
             bounds = new BoundingBox(min * ModelScale, max * ModelScale);
 
-            foreach (var texturePath in model.TextureFiles)
+            foreach (var texturePath in model.texture_list.texture_file)
             {
                 var directory = Path.GetDirectoryName(pmxPath);
                 var fullPath = Path.Combine(directory, texturePath);
@@ -397,17 +398,19 @@ namespace PMXRenderer
                     if (!textureCache.ContainsKey(texturePath))
                     {
                         var (Texture, IsArgb) = LoadTexture(device, fullPath);
+                        texture2DCache.Add(Texture);
                         var res = Texture != null ? new ShaderResourceView(device, Texture) : whiteTexture;
                         res.DebugName = Path.GetFileNameWithoutExtension(fullPath);
                         textureCache.Add(texturePath, (res, IsArgb));
                     }
                 }
             }
-            for (int i = 1; i <= 10; i++)
+            for (int i = 0; i <= 10; i++)
             {
                 var fileName = $"Assets/toon{i:D2}.bmp";
                 var path = Path.Combine(AssemblyFolder, fileName);
                 var (Texture, IsArgb) = LoadTexture(device, path);
+                texture2DCache.Add(Texture);
                 toonCache.Add(Texture != null ? new ShaderResourceView(device, Texture) { DebugName = Path.GetFileNameWithoutExtension(fileName) } : whiteTexture);
             }
         }
@@ -478,8 +481,12 @@ namespace PMXRenderer
             whiteBitmap.SetPixel(0, 0, System.Drawing.Color.White);
             var blackBitmap = new System.Drawing.Bitmap(1, 1);
             blackBitmap.SetPixel(0, 0, System.Drawing.Color.Black);
-            whiteTexture = new ShaderResourceView(device, TextureFromBitmap(whiteBitmap));
-            blackTexture = new ShaderResourceView(device, TextureFromBitmap(blackBitmap));
+            var whiteTexture2D = TextureFromBitmap(whiteBitmap);
+            texture2DCache.Add(whiteTexture2D);
+            var blackTexture2D = TextureFromBitmap(blackBitmap);
+            texture2DCache.Add(blackTexture2D);
+            whiteTexture = new ShaderResourceView(device, whiteTexture2D);
+            blackTexture = new ShaderResourceView(device, blackTexture2D);
 
             LoadModel();
 
@@ -554,13 +561,13 @@ namespace PMXRenderer
             BuildWorldMatrix();
             for (int i = 0; i < vertexBuffers.Length; i++)
             {
-                var material = model.MaterialArray[i];
+                var material = model.material_list.material[i];
                 context.InputAssembler.SetVertexBuffers(0, vertexBufferBindings[i]);
 
-                if (model.MaterialArray[i].TextureId < 255)
+                if (material.usually_texture_index < 255)
                 {
                     var slot = 0;
-                    var texturePath = model.TextureFiles[material.TextureId];
+                    var texturePath = model.texture_list.texture_file[material.usually_texture_index];
                     if (textureCache.ContainsKey(texturePath))
                     {
                         context.PixelShader.SetShaderResource(slot, textureCache[texturePath].Resource);
@@ -571,10 +578,10 @@ namespace PMXRenderer
                         context.PixelShader.SetShaderResource(slot, whiteTexture);
                     }
                 }
-                if (material.SphereId < 255)
+                if (material.sphere_texture_index < 255)
                 {
                     var slot = 1;
-                    var texturePath = model.TextureFiles[material.SphereId];
+                    var texturePath = model.texture_list.texture_file[material.sphere_texture_index];
                     if (textureCache.ContainsKey(texturePath))
                     {
                         context.PixelShader.SetShaderResource(slot, textureCache[texturePath].Resource);
@@ -582,29 +589,22 @@ namespace PMXRenderer
                     }
                     else
                     {
-                        context.PixelShader.SetShaderResource(slot, material.Mode == SphereMode.MULT ? whiteTexture : blackTexture);
+                        context.PixelShader.SetShaderResource(slot, material.sphere_mode == PMXFormat.Material.SphereMode.MulSphere ? whiteTexture : blackTexture);
                     }
-                    cBuffer.randerParams.W = (float)material.Mode;
+                    cBuffer.randerParams.W = (float)material.sphere_mode;
                 }
                 else
                 {
                     cBuffer.randerParams.W = 0;
                 }
-                if (material.SharedToon == ToonMode.TEXTURE_FILE)
+                if (material.toon_texture_index < model.texture_list.texture_file.Length)
                 {
                     var slot = 2;
-                    if (material.ToonId < 255)
+                    var texturePath = model.texture_list.texture_file[material.toon_texture_index];
+                    if (textureCache.ContainsKey(texturePath))
                     {
-                        var texturePath = model.TextureFiles[material.ToonId];
-                        if (textureCache.ContainsKey(texturePath))
-                        {
-                            context.PixelShader.SetShaderResource(slot, textureCache[texturePath].Resource);
-                            cBuffer.textureSwapRBFlag.Y = textureCache[texturePath].IsArgb ? 1 : 0;
-                        }
-                        else
-                        {
-                            context.PixelShader.SetShaderResource(slot, whiteTexture);
-                        }
+                        context.PixelShader.SetShaderResource(slot, textureCache[texturePath].Resource);
+                        cBuffer.textureSwapRBFlag.Y = textureCache[texturePath].IsArgb ? 1 : 0;
                     }
                     else
                     {
@@ -614,14 +614,14 @@ namespace PMXRenderer
                 else
                 {
                     var slot = 2;
-                    context.PixelShader.SetShaderResource(slot, toonCache[material.ToonId]);
+                    context.PixelShader.SetShaderResource(slot, toonCache[material.common_toon]);
                     cBuffer.textureSwapRBFlag.Z = 1;
                 }
 
                 cBuffer.randerParams.X = i;
-                cBuffer.randerParams.Z = material.Shininess;
-                cBuffer.color = material.Diffuse;
-                cBuffer.ambientColor = new Vector4(material.Ambient.X, material.Ambient.Y, material.Ambient.Z, 1);
+                cBuffer.randerParams.Z = material.specularity;
+                cBuffer.color = material.diffuse_color.ToVector4();
+                cBuffer.ambientColor = material.ambient_color.ToVector4();
                 context.UpdateSubresource(ref cBuffer, constantBuffer);
 
                 context.Draw(vertexBuffers[i].VertexCount, 0);

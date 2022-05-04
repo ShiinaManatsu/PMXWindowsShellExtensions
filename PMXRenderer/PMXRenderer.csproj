@@ -78,6 +78,8 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="PMXFormat.cs" />
+    <Compile Include="PMXLoaderScript.cs" />
     <Compile Include="PMXRenderer.cs" />
     <Compile Include="Pmx\CloneUtil.cs" />
     <Compile Include="Pmx\IPmxData.cs" />

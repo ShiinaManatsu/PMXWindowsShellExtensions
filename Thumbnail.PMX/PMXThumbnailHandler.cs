@@ -32,19 +32,18 @@ namespace Thumbnail.PMX
         protected override Bitmap GetThumbnailImage(uint width)
         {
             Bitmap bitmap;
+            var renderer = new PMXRenderer.PMXRenderer();
             try
             {
-                bitmap = new PMXRenderer.PMXRenderer().GeneratePmxPreview(SelectedItemPath, (int)width, (int)width);
+                bitmap = renderer.GeneratePmxPreview(SelectedItemPath, (int)width, (int)width);
             }
             catch (Exception e)
             {
                 MessageBox.Show(e.ToString());
                 bitmap = null;
             }
-            finally
-            {
-                GC.Collect();
-            }
+            renderer = null;
+            GC.Collect();
 
             return bitmap;
         }
