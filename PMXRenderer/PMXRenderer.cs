@@ -1,5 +1,4 @@
 using MMDataIO.Pmx;
-using MMDExtensions;
 using SharpDX;
 using SharpDX.D3DCompiler;
 using SharpDX.Direct3D;
@@ -43,8 +42,9 @@ namespace PMXRenderer
         private RenderTargetView renderView;
         private DepthStencilView depthView;
 
-        private Texture2D whiteTexture;
-        private Texture2D blackTexture;
+        private ShaderResourceView whiteTexture;
+        private ShaderResourceView blackTexture;
+
 
         private int width;
         private int height;
@@ -55,6 +55,7 @@ namespace PMXRenderer
         private Vector3 lookTarget;
 
         private readonly Dictionary<string, (ShaderResourceView Resource, bool IsArgb)> textureCache = new Dictionary<string, (ShaderResourceView Resource, bool IsArgb)>();
+        private readonly List<ShaderResourceView> toonCache = new List<ShaderResourceView>();
         private (Buffer Buffer, int VertexCount)[] vertexBuffers;
         private List<VertexBufferBinding> vertexBufferBindings;
 
@@ -70,6 +71,7 @@ namespace PMXRenderer
 
         private const string ShaderPath = @"Assets/Toon.hlsl";
         private string AssemblyFolder => Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+        private Color ClearColor => Color.Transparent;
         #endregion
 
         public System.Drawing.Bitmap Blit(Device device, Texture2D src)
@@ -225,24 +227,9 @@ namespace PMXRenderer
                 }
 
                 context.ClearDepthStencilView(depthView, DepthStencilClearFlags.Depth, 1.0f, 0);
-                context.ClearRenderTargetView(renderView, Color.White);
-                for (int i = 0; i < vertexBuffers.Length; i++)
-                {
-                    context.InputAssembler.SetVertexBuffers(0, vertexBufferBindings[i]);
-
-                    if (model.MaterialArray[i].TextureId >= 255) continue;
-
-                    var texturePath = model.TextureFiles[model.MaterialArray[i].TextureId];
-                    if (textureCache.ContainsKey(texturePath))
-                    {
-                        context.PixelShader.SetShaderResource(0, textureCache[texturePath].Resource);
-                        cBuffer.index.Y = textureCache[texturePath].IsArgb ? 1 : 0;
-                    }
-
-                    cBuffer.index.X = i;
-                    context.UpdateSubresource(ref cBuffer, constantBuffer);
-                    context.Draw(vertexBuffers[i].VertexCount, 0);
-                }
+                context.ClearRenderTargetView(renderView, ClearColor);
+                cBuffer.randerParams.Y = 0;
+                DrawMaterials();
 
                 swapChain.Present(0, PresentFlags.None);
 
@@ -280,7 +267,14 @@ namespace PMXRenderer
             //PrepareBeforeDevice();
             device = new Device(DriverType.Hardware, DeviceCreationFlags.VideoSupport | DeviceCreationFlags.BgraSupport | DeviceCreationFlags.None).QueryInterface<Device>();
             context = device.ImmediateContext;
-            PrepareAfterDevice();
+            try
+            {
+                PrepareAfterDevice();
+            }
+            catch (Exception)
+            {
+                return null;
+            }
 
             var screenDescription = new Texture2DDescription()
             {
@@ -306,24 +300,9 @@ namespace PMXRenderer
             context.OutputMerger.SetTargets(depthView, renderView);
             context.OutputMerger.SetBlendState(blendState);
             context.ClearDepthStencilView(depthView, DepthStencilClearFlags.Depth, 1.0f, 0);
-            context.ClearRenderTargetView(renderView, Color.DarkGray);
-
-            for (int i = 0; i < vertexBuffers.Length; i++)
-            {
-                context.InputAssembler.SetVertexBuffers(0, vertexBufferBindings[i]);
-
-                if (model.MaterialArray[i].TextureId >= 255) continue;
-
-                var texturePath = model.TextureFiles[model.MaterialArray[i].TextureId];
-                if (textureCache.ContainsKey(texturePath))
-                {
-                    context.PixelShader.SetShaderResource(0, textureCache[texturePath].Resource);
-                    cBuffer.index.Y = textureCache[texturePath].IsArgb ? 1 : 0;
-                }
-                cBuffer.index.X = i;
-                context.UpdateSubresource(ref cBuffer, constantBuffer);
-                context.Draw(vertexBuffers[i].VertexCount, 0);
-            }
+            context.ClearRenderTargetView(renderView, ClearColor);
+            cBuffer.randerParams.Y = 1;
+            DrawMaterials();
 
             var bitmap = Blit(device, backBuffer);
 
@@ -352,6 +331,19 @@ namespace PMXRenderer
             {
                 model.Read(r);
             }
+            //try
+            //{
+            //    model = new PmxModelData();
+            //    using (var r = new BinaryReader(File.OpenRead(pmxPath)))
+            //    {
+            //        model.Read(r);
+            //    }
+            //}
+            //catch (Exception e)
+            //{
+            //    MessageBox.Show(pmxPath);
+            //    throw e;
+            //}
 
             vertexBuffers = new (Buffer Buffer, int VertexCount)[model.MaterialArray.Length];
             for (int i = 0, indexOffset = 0; i < model.MaterialArray.Length; ++i)
@@ -361,7 +353,7 @@ namespace PMXRenderer
                 for (int j = 0; j < mat.FaceCount; ++j)
                 {
                     var index = model.VertexIndices[indexOffset + j];
-                    var vertex = model.VertexArray[Mathf.Abs(index)];
+                    var vertex = model.VertexArray[index];
                     vertexData[j] = new VertexData()
                     {
                         Position = vertex.Pos * ModelScale,
@@ -402,14 +394,21 @@ namespace PMXRenderer
                 var fullPath = Path.Combine(directory, texturePath);
                 if (File.Exists(fullPath))
                 {
-                    Texture2D texture;
                     if (!textureCache.ContainsKey(texturePath))
                     {
-                        var loaded = LoadTexture(device, fullPath);
-                        texture = loaded.Texture;
-                        textureCache.Add(texturePath, (new ShaderResourceView(device, texture), loaded.IsArgb));
+                        var (Texture, IsArgb) = LoadTexture(device, fullPath);
+                        var res = Texture != null ? new ShaderResourceView(device, Texture) : whiteTexture;
+                        res.DebugName = Path.GetFileNameWithoutExtension(fullPath);
+                        textureCache.Add(texturePath, (res, IsArgb));
                     }
                 }
+            }
+            for (int i = 1; i <= 10; i++)
+            {
+                var fileName = $"Assets/toon{i:D2}.bmp";
+                var path = Path.Combine(AssemblyFolder, fileName);
+                var (Texture, IsArgb) = LoadTexture(device, path);
+                toonCache.Add(Texture != null ? new ShaderResourceView(device, Texture) { DebugName = Path.GetFileNameWithoutExtension(fileName) } : whiteTexture);
             }
         }
 
@@ -448,7 +447,7 @@ namespace PMXRenderer
             blendState = new BlendState(device, blendStateDescription);
             rasterizerState = new RasterizerState(device, new RasterizerStateDescription()
             {
-                CullMode = CullMode.None,
+                CullMode = CullMode.Back,
                 DepthBias = 0,
                 DepthBiasClamp = 0,
                 FillMode = FillMode.Solid,
@@ -471,25 +470,24 @@ namespace PMXRenderer
             var signature = ShaderSignature.GetInputSignature(vertexShaderByteCode);
 
             // Create Constant Buffer
-            constantBuffer = new Buffer(device, Utilities.SizeOf<CBuffer>(), ResourceUsage.Default, BindFlags.ConstantBuffer, CpuAccessFlags.None, ResourceOptionFlags.None, 0);
-            cBuffer = new CBuffer(Matrix.Identity, Vector4.Zero);
+            constantBuffer = new Buffer(device, (int)((Utilities.SizeOf<CBuffer>() + 15) & ~15u), ResourceUsage.Default, BindFlags.ConstantBuffer, CpuAccessFlags.None, ResourceOptionFlags.None, 0);
+            cBuffer = new CBuffer(default);
             layout = new InputLayout(device, signature, new[] { new InputElement("POSITION", 0, Format.R32G32B32_Float, 0, 0), new InputElement("NORMAL", 0, Format.R32G32B32_Float, 12, 0), new InputElement("TEXCOORD", 0, Format.R32G32_Float, 24, 0) });
-
-            LoadModel();
-
-            SetupCameraPosition();
-            BuildWorldMatrix();
-
-            signature.Dispose();
-            vertexShaderByteCode.Dispose();
-            pixelShaderByteCode.Dispose();
 
             var whiteBitmap = new System.Drawing.Bitmap(1, 1);
             whiteBitmap.SetPixel(0, 0, System.Drawing.Color.White);
             var blackBitmap = new System.Drawing.Bitmap(1, 1);
             blackBitmap.SetPixel(0, 0, System.Drawing.Color.Black);
-            whiteTexture = TextureFromBitmap(whiteBitmap);
-            blackTexture = TextureFromBitmap(blackBitmap);
+            whiteTexture = new ShaderResourceView(device, TextureFromBitmap(whiteBitmap));
+            blackTexture = new ShaderResourceView(device, TextureFromBitmap(blackBitmap));
+
+            LoadModel();
+
+            SetupCameraPosition();
+
+            signature.Dispose();
+            vertexShaderByteCode.Dispose();
+            pixelShaderByteCode.Dispose();
 
             // Prepare All the stages
             context.InputAssembler.InputLayout = layout;
@@ -498,6 +496,7 @@ namespace PMXRenderer
             context.VertexShader.Set(vertexShader);
             context.Rasterizer.State = rasterizerState;
             context.PixelShader.Set(pixelShader);
+            context.PixelShader.SetConstantBuffer(0, constantBuffer);
             context.OutputMerger.SetBlendState(blendState);
         }
 
@@ -511,17 +510,21 @@ namespace PMXRenderer
             float cameraView = 2.0f * (float)Mathf.Tan((double)(0.5f * Deg2Rad * Fov)); // Visible height 1 meter in front
             float distance = CameraDistance * objectSize / cameraView; // Combined wanted distance from the object
             distance += 0.5f * objectSize; // Estimated offset from the center to the outside of the object
-            cameraPosition = bounds.Center - distance * Vector3.ForwardLH;
+            cameraPosition = bounds.Center - distance * Vector3.ForwardLH + new Vector3(0, bounds.Height * 0.15f, 0);
         }
 
         private void BuildWorldMatrix()
         {
             // Prepare matrices
             var view = Matrix.LookAtLH(cameraPosition, lookTarget, Vector3.Up);
-            var proj = Matrix.PerspectiveFovLH((float)(Deg2Rad * Fov), width / (float)height, 0.1f, 100.0f);
+            var proj = Matrix.PerspectiveFovLH((float)(Deg2Rad * Fov), width / (float)height, 0.1f, 10.0f);
             var worldViewProj = Matrix.Multiply(view, proj);
             worldViewProj.Transpose();
             cBuffer.matrix = worldViewProj;
+            view.Invert();
+            view.Transpose();
+            cBuffer.view = view;
+            cBuffer.cameraPosition = new Vector4(cameraPosition.X, cameraPosition.Y, cameraPosition.Z, 0);
         }
 
         private void BuildRenderTargets()
@@ -542,25 +545,127 @@ namespace PMXRenderer
             });
         }
 
-        public (Texture2D Texture, bool IsArgb) LoadTexture(Device device, string path)
+        /// <summary>
+        /// Set and draw materials
+        /// </summary>
+        /// <param name="onDraw">Called after set material, param is vertex count</param>
+        private void DrawMaterials()
         {
-            var extension = Path.GetExtension(path).ToLower();
-            if (extension.Contains("tga") || extension.Contains("dds"))
+            BuildWorldMatrix();
+            for (int i = 0; i < vertexBuffers.Length; i++)
             {
-                var bitmap = PFimToBitmap(path);
-                var tex = TextureFromBitmap(bitmap);
-                return (tex, bitmap.PixelFormat.ToString().ToLower().Contains("argb"));
-            }
-            else
-            {
-                return (TextureLoader.CreateTexture2DFromBitmap(device, TextureLoader.LoadBitmap(new ImagingFactory2(), path)), false);
-            }
+                var material = model.MaterialArray[i];
+                context.InputAssembler.SetVertexBuffers(0, vertexBufferBindings[i]);
 
+                if (model.MaterialArray[i].TextureId < 255)
+                {
+                    var slot = 0;
+                    var texturePath = model.TextureFiles[material.TextureId];
+                    if (textureCache.ContainsKey(texturePath))
+                    {
+                        context.PixelShader.SetShaderResource(slot, textureCache[texturePath].Resource);
+                        cBuffer.textureSwapRBFlag.X = textureCache[texturePath].IsArgb ? 1 : 0;
+                    }
+                    else
+                    {
+                        context.PixelShader.SetShaderResource(slot, whiteTexture);
+                    }
+                }
+                if (material.SphereId < 255)
+                {
+                    var slot = 1;
+                    var texturePath = model.TextureFiles[material.SphereId];
+                    if (textureCache.ContainsKey(texturePath))
+                    {
+                        context.PixelShader.SetShaderResource(slot, textureCache[texturePath].Resource);
+                        cBuffer.textureSwapRBFlag.Y = textureCache[texturePath].IsArgb ? 1 : 0;
+                    }
+                    else
+                    {
+                        context.PixelShader.SetShaderResource(slot, material.Mode == SphereMode.MULT ? whiteTexture : blackTexture);
+                    }
+                    cBuffer.randerParams.W = (float)material.Mode;
+                }
+                else
+                {
+                    cBuffer.randerParams.W = 0;
+                }
+                if (material.SharedToon == ToonMode.TEXTURE_FILE)
+                {
+                    var slot = 2;
+                    if (material.ToonId < 255)
+                    {
+                        var texturePath = model.TextureFiles[material.ToonId];
+                        if (textureCache.ContainsKey(texturePath))
+                        {
+                            context.PixelShader.SetShaderResource(slot, textureCache[texturePath].Resource);
+                            cBuffer.textureSwapRBFlag.Y = textureCache[texturePath].IsArgb ? 1 : 0;
+                        }
+                        else
+                        {
+                            context.PixelShader.SetShaderResource(slot, whiteTexture);
+                        }
+                    }
+                    else
+                    {
+                        context.PixelShader.SetShaderResource(slot, whiteTexture);
+                    }
+                }
+                else
+                {
+                    var slot = 2;
+                    context.PixelShader.SetShaderResource(slot, toonCache[material.ToonId]);
+                    cBuffer.textureSwapRBFlag.Z = 1;
+                }
+
+                cBuffer.randerParams.X = i;
+                cBuffer.randerParams.Z = material.Shininess;
+                cBuffer.color = material.Diffuse;
+                cBuffer.ambientColor = new Vector4(material.Ambient.X, material.Ambient.Y, material.Ambient.Z, 1);
+                context.UpdateSubresource(ref cBuffer, constantBuffer);
+
+                context.Draw(vertexBuffers[i].VertexCount, 0);
+            }
         }
 
-        private Texture2D TextureFromBitmap(System.Drawing.Bitmap bitmap)
+        public (Texture2D Texture, bool IsArgb) LoadTexture(Device device, string path)
         {
-            var bitmapData = bitmap.LockBits(new System.Drawing.Rectangle(0, 0, bitmap.Width, bitmap.Height), ImageLockMode.ReadOnly, bitmap.PixelFormat);
+            try
+            {
+                var extension = Path.GetExtension(path).ToLower();
+                if (/*extension.Contains("tga") ||*/ extension.Contains("dds"))
+                {
+                    (System.Drawing.Bitmap bitmap, Stream stream) = PFimToBitmap(path);
+                    var tex = TextureFromBitmap(bitmap, stream);
+                    return (tex, bitmap.PixelFormat.ToString().ToLower().Contains("argb"));
+                }
+                else
+                {
+                    var pack = TextureLoader.LoadBitmap(new ImagingFactory2(), path);
+                    return (TextureLoader.CreateTexture2DFromBitmap(device, pack.Source, pack.Stream), extension.Contains("bmp"));
+                }
+            }
+            catch (Exception e)
+            {
+                //throw e;
+                return (null, false);
+            }
+        }
+
+        private Texture2D TextureFromBitmap(System.Drawing.Bitmap bitmap, Stream stream = null)
+        {
+            var format = Format.B8G8R8A8_UNorm;
+
+            switch (bitmap.PixelFormat)
+            {
+                case System.Drawing.Imaging.PixelFormat.Format24bppRgb:
+                    format = Format.B8G8R8X8_UNorm;
+                    break;
+                default:
+                    break;
+            }
+
+            var bitmapData = bitmap.LockBits(new System.Drawing.Rectangle(0, 0, bitmap.Width, bitmap.Height), ImageLockMode.ReadWrite, bitmap.PixelFormat);
 
             // copy our buffer to the texture
             int stride = bitmap.Width * 4;
@@ -568,7 +673,7 @@ namespace PMXRenderer
             {
                 Width = bitmap.Width,
                 Height = bitmap.Height,
-                Format = Format.R8G8B8A8_UNorm,
+                Format = format,
                 ArraySize = 1,
                 BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget,
                 Usage = ResourceUsage.Default,
@@ -577,16 +682,24 @@ namespace PMXRenderer
                 OptionFlags = ResourceOptionFlags.GenerateMipMaps,
                 SampleDescription = new SampleDescription(1, 0),
             });
-            device.ImmediateContext.UpdateSubresource(tex, 0, null, bitmapData.Scan0, stride, 0);
-
+            try
+            {
+                device.ImmediateContext.UpdateSubresource(tex, 0, null, bitmapData.Scan0, stride, 0);
+            }
+            catch
+            {
+                return null;
+            }
             // unlock the bitmap data
             bitmap.UnlockBits(bitmapData);
+            if (stream != null) stream.Dispose();
             return tex;
         }
 
-        private System.Drawing.Bitmap PFimToBitmap(string path)
+        private (System.Drawing.Bitmap Bitmap, Stream Stream) PFimToBitmap(string path)
         {
-            using (var image = Pfim.Pfim.FromFile(path))
+            var readStream = File.OpenRead(path);
+            using (var image = Pfim.Pfim.FromStream(readStream))
             {
                 System.Drawing.Imaging.PixelFormat format;
 
@@ -617,22 +730,22 @@ namespace PMXRenderer
                 // Pin pfim's data array so that it doesn't get reaped by GC, unnecessary
                 // in this snippet but useful technique if the data was going to be used in
                 // control like a picture box
-                var handle = GCHandle.Alloc(image.Data, GCHandleType.Pinned);
+                //var handle = GCHandle.Alloc(image.Data, GCHandleType.Pinned);
                 try
                 {
                     var data = Marshal.UnsafeAddrOfPinnedArrayElement(image.Data, 0);
                     var bitmap = new System.Drawing.Bitmap(image.Width, image.Height, image.Stride, format, data);
 
-                    return bitmap;
+                    return (bitmap, readStream);
                 }
                 catch (Exception e)
                 {
-                    return null;
+                    return (null, readStream);
                 }
-                finally
-                {
-                    handle.Free();
-                }
+                //finally
+                //{
+                //    handle.Free();
+                //}
             }
         }
     }
@@ -646,13 +759,25 @@ namespace PMXRenderer
 
     public struct CBuffer
     {
+        public Matrix view;
         public Matrix matrix;
-        public Vector4 index;
+        public Vector4 cameraPosition;
+        public Vector4 randerParams;    //	x: Drawing index, y: Swap RB, z:shininess, w: (Sphere operation DISBLE = 0,MULT = 1,ADD = 2,SUB_TEXTURE = 3)
+        public Vector4 color;
+        public Vector4 specularColor;
+        public Vector4 ambientColor;
+        public Vector4 textureSwapRBFlag;
 
-        public CBuffer(Matrix _, Vector4 __)
+        public CBuffer(object _)
         {
-            this.matrix = Matrix.Identity;
-            this.index = Vector4.One;
+            view = Matrix.Identity;
+            matrix = Matrix.Identity;
+            randerParams = Vector4.Zero;
+            color = Vector4.One;
+            specularColor = Vector4.One;
+            ambientColor = Vector4.One;
+            textureSwapRBFlag = Vector4.Zero;
+            cameraPosition = Vector4.Zero;
         }
     }
 
@@ -664,11 +789,12 @@ namespace PMXRenderer
         /// <param name="deviceManager"></param>
         /// <param name="filename"></param>
         /// <returns></returns>
-        public static SharpDX.WIC.BitmapSource LoadBitmap(SharpDX.WIC.ImagingFactory2 factory, string filename)
+        public static (SharpDX.WIC.BitmapSource Source, Stream Stream) LoadBitmap(SharpDX.WIC.ImagingFactory2 factory, string filename)
         {
+            var readStream = File.OpenRead(filename);
             var bitmapDecoder = new SharpDX.WIC.BitmapDecoder(
                 factory,
-                filename,
+                readStream,
                 DecodeOptions.CacheOnDemand
                 );
 
@@ -682,7 +808,7 @@ namespace PMXRenderer
                 0.0,
                 BitmapPaletteType.Custom);
 
-            return formatConverter;
+            return (formatConverter, readStream);
         }
 
         /// <summary>
@@ -691,7 +817,7 @@ namespace PMXRenderer
         /// <param name="device">The Direct3D11 device</param>
         /// <param name="bitmapSource">The WIC bitmap source</param>
         /// <returns>A Texture2D</returns>
-        public static SharpDX.Direct3D11.Texture2D CreateTexture2DFromBitmap(SharpDX.Direct3D11.Device device, SharpDX.WIC.BitmapSource bitmapSource)
+        public static SharpDX.Direct3D11.Texture2D CreateTexture2DFromBitmap(SharpDX.Direct3D11.Device device, SharpDX.WIC.BitmapSource bitmapSource, Stream stream)
         {
             // Allocate DataStream to receive the WIC image pixels
             int stride = bitmapSource.Size.Width * 4;
@@ -699,6 +825,7 @@ namespace PMXRenderer
             {
                 // Copy the content of the WIC to the buffer
                 bitmapSource.CopyPixels(stride, buffer);
+                stream.Dispose();
                 return new SharpDX.Direct3D11.Texture2D(device, new SharpDX.Direct3D11.Texture2DDescription()
                 {
                     Width = bitmapSource.Size.Width,

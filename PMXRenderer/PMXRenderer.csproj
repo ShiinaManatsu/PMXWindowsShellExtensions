@@ -12,6 +12,8 @@
     <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
+    <NuGetPackageImportStamp>
+    </NuGetPackageImportStamp>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -76,9 +78,6 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="DDSReader.cs" />
-    <Compile Include="PMXFormat.cs" />
-    <Compile Include="PMXLoaderScript.cs" />
     <Compile Include="PMXRenderer.cs" />
     <Compile Include="Pmx\CloneUtil.cs" />
     <Compile Include="Pmx\IPmxData.cs" />

@@ -2,6 +2,7 @@
 using System;
 using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Windows;
 
 namespace Thumbnail.PMX
 {
@@ -34,6 +35,11 @@ namespace Thumbnail.PMX
             try
             {
                 bitmap = new PMXRenderer.PMXRenderer().GeneratePmxPreview(SelectedItemPath, (int)width, (int)width);
+            }
+            catch (Exception e)
+            {
+                MessageBox.Show(e.ToString());
+                bitmap = null;
             }
             finally
             {

@@ -174,7 +174,7 @@ namespace MMDataIO.Pmx
 
         public static int ReadPmxId(this BinaryReader reader, byte size)
         {
-            int id = 0;
+            uint id = 0;
 
             switch (size)
             {
@@ -183,14 +183,14 @@ namespace MMDataIO.Pmx
                     break;
 
                 case 2:
-                    id = reader.ReadInt16();
+                    id = reader.ReadUInt16();
                     break;
 
                 case 4:
-                    id = reader.ReadInt32();
+                    id = reader.ReadUInt32();
                     break;
             }
-            return id;
+            return (int)id;
         }
 
         public static string ReadText(this BinaryReader reader, Encoding encoding)
