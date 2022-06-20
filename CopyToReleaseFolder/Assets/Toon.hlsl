@@ -88,6 +88,7 @@ float4 PS(PS_IN input, out float depth : SV_Depth) : SV_Target
 
 	if(renderParams.w == 1)
 	{
+		
 		col.rgb *= sph;
 	}
 	else if(renderParams.w == 2)
@@ -103,7 +104,8 @@ float4 PS(PS_IN input, out float depth : SV_Depth) : SV_Target
 	float3 light = saturate( ambientColor.xyz + ( diffuse.rgb * lightColor ) );
 	light *= col.rgb;
 	light += saturate(dirSpecular);
-	light *= toon.xyz;
+	float3 inShadow = light * toon.xyz;
+	light = lerp(light,inShadow,0.5);
 	
 	float4 final = float4(light,col.a * diffuse.a);
 	return lerp(final, final.bgra, renderParams.y);	//	Swap RB channel so we can save to bitmap correctly

@@ -3,6 +3,7 @@ using MMDExtensions;
 using MMDExtensions.PMX;
 using SharpDX;
 using SharpDX.D3DCompiler;
+using SharpDX.Diagnostics;
 using SharpDX.Direct3D;
 using SharpDX.Direct3D11;
 using SharpDX.DXGI;
@@ -14,6 +15,7 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Buffer = SharpDX.Direct3D11.Buffer;
@@ -58,6 +60,7 @@ namespace PMXRenderer
 
         private readonly Dictionary<string, (ShaderResourceView Resource, bool IsArgb)> textureCache = new Dictionary<string, (ShaderResourceView Resource, bool IsArgb)>();
         private readonly List<ShaderResourceView> toonCache = new List<ShaderResourceView>();
+        private List<IDisposable> disposables = new List<IDisposable>();
         private List<Texture2D> texture2DCache = new List<Texture2D>();
         private (Buffer Buffer, int VertexCount)[] vertexBuffers;
         private List<VertexBufferBinding> vertexBufferBindings;
@@ -74,7 +77,7 @@ namespace PMXRenderer
 
         private const string ShaderPath = @"Assets/Toon.hlsl";
         private string AssemblyFolder => Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-        private Color ClearColor => Color.Transparent;
+        private Color ClearColor => new Color(new Vector4(0, 0, 0, 0.3f));
         #endregion
 
         public System.Drawing.Bitmap Blit(Device device, Texture2D src)
@@ -263,6 +266,7 @@ namespace PMXRenderer
 
         public System.Drawing.Bitmap GeneratePmxPreview(string absolutePmxPath, int previewWidth = 800, int previewHeight = 600)
         {
+            //Configuration.EnableObjectTracking = true;
             width = previewWidth;
             height = previewHeight;
             pmxPath = absolutePmxPath;
@@ -325,6 +329,10 @@ namespace PMXRenderer
             }
 
             // Release all resources
+            blendState.Dispose();
+            rasterizerState.Dispose();
+            whiteTexture.Dispose();
+            blackTexture.Dispose();
             vertexShader.Dispose();
             pixelShader.Dispose();
             layout.Dispose();
@@ -337,7 +345,13 @@ namespace PMXRenderer
             context.Flush();
             context.Dispose();
             device.Dispose();
-
+            foreach (var buffer in vertexBuffers)
+            {
+                buffer.Buffer.Dispose();
+            }
+            //var message = ObjectTracker.ReportActiveObjects();
+            //MessageBox.Show(message);
+            //Clipboard.SetText(message);
             return bitmap;
         }
         #endregion
@@ -370,7 +384,7 @@ namespace PMXRenderer
             var min = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
             var max = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
 
-            foreach (var vertex in model.vertex_list.vertex.Select(x => x.pos))
+            foreach (var vertex in model.face_vertex_list.face_vert_index.Select(x => model.vertex_list.vertex[x].pos))
             {
                 if (vertex.X < min.X)
                     min.X = vertex.X;
@@ -450,7 +464,7 @@ namespace PMXRenderer
             blendState = new BlendState(device, blendStateDescription);
             rasterizerState = new RasterizerState(device, new RasterizerStateDescription()
             {
-                CullMode = CullMode.Back,
+                CullMode = CullMode.None,
                 DepthBias = 0,
                 DepthBiasClamp = 0,
                 FillMode = FillMode.Solid,
@@ -564,9 +578,9 @@ namespace PMXRenderer
                 var material = model.material_list.material[i];
                 context.InputAssembler.SetVertexBuffers(0, vertexBufferBindings[i]);
 
-                if (material.usually_texture_index < 255)
+                var slot = 0;
+                if (material.usually_texture_index != uint.MaxValue)
                 {
-                    var slot = 0;
                     var texturePath = model.texture_list.texture_file[material.usually_texture_index];
                     if (textureCache.ContainsKey(texturePath))
                     {
@@ -578,9 +592,13 @@ namespace PMXRenderer
                         context.PixelShader.SetShaderResource(slot, whiteTexture);
                     }
                 }
-                if (material.sphere_texture_index < 255)
+                else
                 {
-                    var slot = 1;
+                    context.PixelShader.SetShaderResource(slot, whiteTexture);
+                }
+                slot = 1;
+                if (material.sphere_texture_index != uint.MaxValue)
+                {
                     var texturePath = model.texture_list.texture_file[material.sphere_texture_index];
                     if (textureCache.ContainsKey(texturePath))
                     {
@@ -591,31 +609,38 @@ namespace PMXRenderer
                     {
                         context.PixelShader.SetShaderResource(slot, material.sphere_mode == PMXFormat.Material.SphereMode.MulSphere ? whiteTexture : blackTexture);
                     }
-                    cBuffer.randerParams.W = (float)material.sphere_mode;
+                    cBuffer.randerParams.W = (int)material.sphere_mode;
                 }
                 else
                 {
+                    context.PixelShader.SetShaderResource(slot, blackTexture);
                     cBuffer.randerParams.W = 0;
                 }
-                if (material.toon_texture_index < model.texture_list.texture_file.Length)
+                slot = 2;
+                if (material.common_toon == 1)
                 {
-                    var slot = 2;
-                    var texturePath = model.texture_list.texture_file[material.toon_texture_index];
-                    if (textureCache.ContainsKey(texturePath))
+                    context.PixelShader.SetShaderResource(slot, toonCache[material.common_toon + 1]);
+                    cBuffer.textureSwapRBFlag.Z = 1;
+                }
+                else
+                {
+                    if (material.toon_texture_index != uint.MaxValue)
                     {
-                        context.PixelShader.SetShaderResource(slot, textureCache[texturePath].Resource);
-                        cBuffer.textureSwapRBFlag.Y = textureCache[texturePath].IsArgb ? 1 : 0;
+                        var texturePath = model.texture_list.texture_file[material.toon_texture_index];
+                        if (textureCache.ContainsKey(texturePath))
+                        {
+                            context.PixelShader.SetShaderResource(slot, textureCache[texturePath].Resource);
+                            cBuffer.textureSwapRBFlag.Y = textureCache[texturePath].IsArgb ? 1 : 0;
+                        }
+                        else
+                        {
+                            context.PixelShader.SetShaderResource(slot, whiteTexture);
+                        }
                     }
                     else
                     {
                         context.PixelShader.SetShaderResource(slot, whiteTexture);
                     }
-                }
-                else
-                {
-                    var slot = 2;
-                    context.PixelShader.SetShaderResource(slot, toonCache[material.common_toon]);
-                    cBuffer.textureSwapRBFlag.Z = 1;
                 }
 
                 cBuffer.randerParams.X = i;
@@ -632,17 +657,30 @@ namespace PMXRenderer
         {
             try
             {
-                var extension = Path.GetExtension(path).ToLower();
-                if (/*extension.Contains("tga") ||*/ extension.Contains("dds"))
+                //var extension = Path.GetExtension(path).ToLower();
+                //if (extension.Contains("dds") || extension.Contains("tga"))
+                //{
+                //    try
+                //    {
+                //        return LoadTextureFromPFim(path);
+                //    }
+                //    catch
+                //    {
+                //        return LoadTextureFromTextureLoader(path);
+                //    }
+                //}
+                //else
+                //{
+                //    return LoadTextureFromTextureLoader(path);
+                //}
+
+                try
                 {
-                    (System.Drawing.Bitmap bitmap, Stream stream) = PFimToBitmap(path);
-                    var tex = TextureFromBitmap(bitmap, stream);
-                    return (tex, bitmap.PixelFormat.ToString().ToLower().Contains("argb"));
+                    return LoadTextureFromPFim(path);
                 }
-                else
+                catch
                 {
-                    var pack = TextureLoader.LoadBitmap(new ImagingFactory2(), path);
-                    return (TextureLoader.CreateTexture2DFromBitmap(device, pack.Source, pack.Stream), extension.Contains("bmp"));
+                    return LoadTextureFromTextureLoader(path);
                 }
             }
             catch (Exception e)
@@ -651,7 +689,27 @@ namespace PMXRenderer
                 return (null, false);
             }
         }
+        public (Texture2D Texture, bool IsArgb) LoadTextureFromPFim(string path)
+        {
+            var extension = Path.GetExtension(path).ToLower();
+            (System.Drawing.Bitmap bitmap, Stream stream) = PFimToBitmap(path);
+            var tex = TextureFromBitmap(bitmap, stream);
+            return (tex,false/* bitmap.PixelFormat.ToString().ToLower().Contains("argb") ^ extension.Contains("tga")*/);
+        }
 
+        public (Texture2D Texture, bool IsArgb) LoadTextureFromTextureLoader(string path)
+        {
+            var extension = Path.GetExtension(path).ToLower();
+            var pack = TextureLoader.LoadBitmap(new ImagingFactory2(), path);
+            var result = (TextureLoader.CreateTexture2DFromBitmap(device, pack.Source, pack.Stream),false /*extension.Contains("bmp")*/);
+            foreach (var dis in pack.Disposables)
+            {
+                dis.Dispose();
+            }
+            return result;
+        }
+
+        [HandleProcessCorruptedStateExceptions]
         private Texture2D TextureFromBitmap(System.Drawing.Bitmap bitmap, Stream stream = null)
         {
             var format = Format.B8G8R8A8_UNorm;
@@ -686,9 +744,9 @@ namespace PMXRenderer
             {
                 device.ImmediateContext.UpdateSubresource(tex, 0, null, bitmapData.Scan0, stride, 0);
             }
-            catch
+            catch (Exception e)
             {
-                return null;
+                throw e;
             }
             // unlock the bitmap data
             bitmap.UnlockBits(bitmapData);
@@ -748,6 +806,8 @@ namespace PMXRenderer
                 //}
             }
         }
+
+
     }
 
     public struct VertexData
@@ -789,7 +849,7 @@ namespace PMXRenderer
         /// <param name="deviceManager"></param>
         /// <param name="filename"></param>
         /// <returns></returns>
-        public static (SharpDX.WIC.BitmapSource Source, Stream Stream) LoadBitmap(SharpDX.WIC.ImagingFactory2 factory, string filename)
+        public static (SharpDX.WIC.BitmapSource Source, Stream Stream, List<IDisposable> Disposables) LoadBitmap(SharpDX.WIC.ImagingFactory2 factory, string filename)
         {
             var readStream = File.OpenRead(filename);
             var bitmapDecoder = new SharpDX.WIC.BitmapDecoder(
@@ -799,16 +859,21 @@ namespace PMXRenderer
                 );
 
             var formatConverter = new FormatConverter(factory);
-
+            var frame = bitmapDecoder.GetFrame(0);
             formatConverter.Initialize(
-                bitmapDecoder.GetFrame(0),
+                frame,
                 SharpDX.WIC.PixelFormat.Format32bppPRGBA,
                 BitmapDitherType.None,
                 null,
                 0.0,
                 BitmapPaletteType.Custom);
-
-            return (formatConverter, readStream);
+            var disposables = new List<IDisposable>()
+            {
+                factory,
+                bitmapDecoder,
+                frame
+            };
+            return (formatConverter, readStream, disposables);
         }
 
         /// <summary>
@@ -826,10 +891,13 @@ namespace PMXRenderer
                 // Copy the content of the WIC to the buffer
                 bitmapSource.CopyPixels(stride, buffer);
                 stream.Dispose();
+                var width = bitmapSource.Size.Width;
+                var height = bitmapSource.Size.Height;
+                bitmapSource.Dispose();
                 return new SharpDX.Direct3D11.Texture2D(device, new SharpDX.Direct3D11.Texture2DDescription()
                 {
-                    Width = bitmapSource.Size.Width,
-                    Height = bitmapSource.Size.Height,
+                    Width = width,
+                    Height = height,
                     ArraySize = 1,
                     BindFlags = SharpDX.Direct3D11.BindFlags.ShaderResource,
                     Usage = SharpDX.Direct3D11.ResourceUsage.Immutable,
