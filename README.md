@@ -15,6 +15,6 @@ Notes that any of these two operation will restart windows explorer.
 # Current problems
 - `.tga` files not released after generating preview, you have to restart windows explorer.
 - VRAM not released after generation previews, also you have to restart windows explorer to release VRAM. Also for RAM.
-- Reading textures may filp R and G channel, most `.png` and `.jpg` textures are fine.
+- Reading textures may filp R and B channel, you may get a "Avatar" image, most `.png` and `.jpg` textures are fine.
 
 ![Preview](DocumentImages/ExtensionPreview.png)
